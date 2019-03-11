@@ -31,6 +31,60 @@
 */
 
 
+struct color {
+  float r;
+  float g;
+  float b;
+};
+
+Vec3f ivorySphereCoords( -2, 0, -24 );
+Vec3f glassSphereCoorsd ( 0, -1.5, -14 );
+color ivoryColor =  {0.4, 0.4, 0.3 };
+
+
+void render(uint16_t posx, uint16_t posy, uint16_t width, uint16_t height, const std::vector<Sphere> &spheres, const std::vector<Light> &lights, float fov=M_PI/2) {
+  // yay ! thanks to @atanisoft https://gitter.im/espressif/arduino-esp32?at=5c474edc8ce4bb25b8f1ed95
+  uint32_t pos = 0;
+  uint32_t pos16 = 0;
+
+  for (size_t j = 0; j<height; j++) { // actual rendering loop
+    for (size_t i = 0; i<width; i++) {
+      float dir_x =  (i + 0.5) -  width/2.;
+      float dir_y = -(j + 0.5) + height/2.;    // this flips the image at the same time
+      float dir_z = -height/(2.*tan(fov/2.));
+      Vec3f pixelbuffer /*framebuffer[i+j*width]*/ = cast_ray(Vec3f(0,0,0), Vec3f(dir_x, dir_y, dir_z).normalize(), spheres, lights);
+      char r = (char)(255 * max(0.f, min(1.f, pixelbuffer[0])));
+      char g = (char)(255 * max(0.f, min(1.f, pixelbuffer[1])));
+      char b = (char)(255 * max(0.f, min(1.f, pixelbuffer[2])));
+      uint16_t pixelcolor = tft.color565(r, g, b);
+      imgBuffer[++pos16] = pixelcolor;
+      tft.drawPixel(i+posx, j+posy, pixelcolor);
+    }
+  }
+}
+
+
+void raytrace(uint16_t x, uint16_t y, uint16_t width, uint16_t height, float fov) {
+  Material      ivory(1.0, Vec4f(0.8,  0.2, 0.0, 0.0), Vec3f(ivoryColor.r, ivoryColor.g, ivoryColor.b),   50.);
+  //Material      glass(1.5, Vec4f(0.0,  0.5, 0.1, 0.8), Vec3f(0.6, 0.7, 0.8),  125.);
+  //Material red_rubber(1.0, Vec4f(0.9,  0.1, 0.0, 0.0), Vec3f(0.3, 0.1, 0.1),   10.);
+  //Material     mirror(1.0, Vec4f(0.0, 10.0, 0.8, 0.0), Vec3f(1.0, 1.0, 1.0), 1425.);
+  float sphereRadius = 2;
+  std::vector<Sphere> spheres;
+  spheres.push_back(Sphere(Vec3f(ivorySphereCoords.x,                ivorySphereCoords.y,                ivorySphereCoords.z), sphereRadius, ivory));
+  spheres.push_back(Sphere(Vec3f(ivorySphereCoords.x+sphereRadius*2, ivorySphereCoords.y,                ivorySphereCoords.z), sphereRadius, ivory));
+  spheres.push_back(Sphere(Vec3f(ivorySphereCoords.x,                ivorySphereCoords.y+sphereRadius*2, ivorySphereCoords.z), sphereRadius, ivory));
+  spheres.push_back(Sphere(Vec3f(ivorySphereCoords.x+sphereRadius*2, ivorySphereCoords.y+sphereRadius*2, ivorySphereCoords.z), sphereRadius, ivory));
+  std::vector<Light>  lights;
+  lights.push_back(Light(Vec3f(-10, 20,  20), 1.5));
+  lights.push_back(Light(Vec3f( 5, 50, -25), 1.8));
+  lights.push_back(Light(Vec3f( 5, 20,  30), 0.7));
+  render(x, y, width, height, spheres, lights, fov);
+}
+
+
+
+
 struct AmigaBallConfig {
   long Framelength = 20;
   byte Wires = 7; // 0 = no wireframes
@@ -74,6 +128,7 @@ class AmigaRulez {
     bool AnimationDone;
     bool isMovingRight;
     bool isMovingUp = false;
+    bool hasPsram = false;
     
     byte Wires;
     byte bytecounter = 0;
@@ -106,6 +161,7 @@ class AmigaRulez {
     uint16_t BGColor;
     uint16_t GridColor;
     uint16_t ShadowColor;
+    uint16_t *bgData = NULL;
     float lastPositionX;
     float lastPositionY;
     float positionX;
@@ -127,6 +183,7 @@ class AmigaRulez {
       Width  = config.Width;
       Height = config.Height;
       Wires  = config.Wires;
+      hasPsram = psramInit();
 
       setupValues();
       
@@ -134,38 +191,66 @@ class AmigaRulez {
 
       if( Wires > 0 ) {
 
-
         shadow.createSprite( spriteWidth / 2, spriteHeight / 8 );
         shadow.fillSprite( BGColor );
         shadow.fillEllipse( shadow.width()/2, shadow.height()/2, shadow.width()/2-4, shadow.height()/2-2, ShadowColor );
-        //shadow.pushSprite( positionX-spriteCenterX + shadow.width()/2, ShadowYPos+shadow.height() );
+        ShadowYPos += shadow.height()/2;
 
-        
-        grid.createSprite( Width/2, Height/2 ); // don't overflow heap
-        
-        grid.fillSprite(BGColor);
-        drawGrid(grid, XPos, YPos, Width, Height, grid.width(), grid.height());
-        grid.pushSprite( XPos, YPos, BGColor );
-  
-        grid.fillSprite(BGColor);
-        drawGrid(grid, XPos+Width/2, YPos, Width, Height, grid.width(), grid.height());
-        grid.pushSprite( XPos+Width/2, YPos, BGColor );
-  
-        grid.fillSprite(BGColor);
-        drawGrid(grid, XPos, YPos+Height/2, Width, Height, grid.width(), grid.height());
-        grid.pushSprite( XPos, YPos+Height/2, BGColor );
-  
-        grid.fillSprite(BGColor);
-        drawGrid(grid, XPos+Width/2, YPos+Height/2, Width, Height, grid.width(), grid.height());
-        grid.pushSprite( XPos+Width/2, YPos+Height/2, BGColor );
-  
-        grid.deleteSprite();
+        if( hasPsram ) {
 
-        
+          uint16_t bgImageWidth  = Width;
+          uint16_t bgImageHeight = Height - ( ( Height*2 ) / Wires );
+          grid.createSprite( Width, Height );
+          bgImage.createSprite( Width, Height );
+
+          envmap_width = 1280;
+          envmap_height = 640;
+
+          tinyRayTracerInit();
+
+          sprite.createSprite( envmap_width, envmap_height );
+          sprite_drawJpg(0, 0, envmap_1280x640_q4_jpeg, envmap_1280x640_q4_jpeg_len, envmap_width, envmap_height);
+          bgBuffer = (uint16_t*)sprite.frameBuffer(1);
+
+          raytrace(XPos, YPos, Width, Height, 0.5);
+
+          Serial.printf("%f %f %f %f\n", minx, miny, maxx, maxy);
+          
+          bgImage.pushImage(0, 0, Width, Height, imgBuffer);
+
+          drawGrid(bgImage, XPos, YPos, Width, Height, Width, Height);
+          grid.pushImage(0, 0, bgImage.width(), bgImage.height(), (uint16_t*)bgImage.frameBuffer(1) );
+          drawGrid(grid, XPos, YPos, Width, Height, Width, Height);
+          grid.pushSprite( XPos, YPos );
+          grid.deleteSprite();
+          
+        } else {
+
+          grid.createSprite( Width/2, Height/2 ); // don't overflow heap
+          
+          grid.fillSprite(BGColor);
+          drawGrid(grid, XPos, YPos, Width, Height, grid.width(), grid.height());
+          grid.pushSprite( XPos, YPos, BGColor );
+    
+          grid.fillSprite(BGColor);
+          drawGrid(grid, XPos+Width/2, YPos, Width, Height, grid.width(), grid.height());
+          grid.pushSprite( XPos+Width/2, YPos, BGColor );
+    
+          grid.fillSprite(BGColor);
+          drawGrid(grid, XPos, YPos+Height/2, Width, Height, grid.width(), grid.height());
+          grid.pushSprite( XPos, YPos+Height/2, BGColor );
+    
+          grid.fillSprite(BGColor);
+          drawGrid(grid, XPos+Width/2, YPos+Height/2, Width, Height, grid.width(), grid.height());
+          grid.pushSprite( XPos+Width/2, YPos+Height/2, BGColor );
+    
+          grid.deleteSprite();
+        }
+
       }
 
       ball.createSprite(spriteWidth, spriteHeight);
-      ball.fillSprite(BGColor); // Note: Sprite is filled with black when created
+      ball.fillSprite(BGColor);
 
     }
 
@@ -194,6 +279,9 @@ class AmigaRulez {
       PhaseVelocity = 2.5 * deg2rad;
       positionX = XPos + Width/2;
       isMovingRight = true;
+
+      ShadowYPos = YPos + ( (Height / Wires) * (Wires-1) ) /*- 20*/;
+      
     }
 
     float getLat(float phase, int i) {
@@ -273,44 +361,43 @@ class AmigaRulez {
       float stepY  = height / Wires;
       int i, x2, centerdiff;
 
-
-
-      for (uint16_t nPosY = 0; nPosY < height-vspace; nPosY++) {
-        uint16_t nColTmp = tft.color565(nPosY % 256, 255 - (nPosY % 256), 0 );
-        //sprite.drawFastHLine(0, nPosY-y, YPos+spanX, nColTmp);
-        for(uint16_t nPosX = 0; nPosX < width; nPosX+=stepX/4) {
-          nColTmp = tft.color565(nPosY % 256, 255 - (nPosY % 256), 255- (nPosX/2) % 256 );
-          sprite.drawFastHLine(nPosX-x+XPos, nPosY-y+YPos, stepX, nColTmp);
-        }
-      }
-
-      sprite.fillRect(0, vpos, width, vspace, BGColor);
-
-      for( i=0; i<width; i+=stepX ) {
-        sprite.drawFastVLine(XPos+i-x, 0, vpos, GridColor);
-        centerdiff = abs(center - i);
-        if(i==center) {
-          x2 = i;
-        } else {
-          if( i < center ) {
-            x2 = i - centerdiff*2;
-          } else { // i > center
-            x2 = i + centerdiff*2;
+      if( hasPsram ) {
+          sprite.pushImage(-x+XPos, -y+YPos, bgImage.width(), bgImage.height(), (uint16_t*)bgImage.frameBuffer(0));
+      } else {
+        for (uint16_t nPosY = 0; nPosY < height-vspace; nPosY++) {
+          uint16_t nColTmp = tft.color565(nPosY % 256, 255 - (nPosY % 256), 0 );
+          //sprite.drawFastHLine(0, nPosY-y, YPos+spanX, nColTmp);
+          for(uint16_t nPosX = 0; nPosX < width; nPosX+=stepX/4) {
+            nColTmp = tft.color565(nPosY % 256, 255 - (nPosY % 256), 255- (nPosX/2) % 256 );
+            sprite.drawFastHLine(nPosX-x+XPos, nPosY-y+YPos, stepX, nColTmp);
           }
         }
-        sprite.drawLine(XPos+i-x, vpos, XPos+x2-x, YPos+vpos+vspace, GridColor);
-      }
-      
-      for( i=0; i<height-vspace+YPos; i+=stepY ) {
-        sprite.drawFastHLine(0, i-y, YPos+spanX, GridColor);
-      }
-      float powa = 32;
-      while(powa>1) {
-        powa /=2;
-        sprite.drawFastHLine(0, vpos+(vspace/powa), YPos+spanX, GridColor);  
-      }
-      if( ShadowYPos == 0.00 ) {
-        ShadowYPos = vpos + ( (vspace- shadow.height()) / 2) + YPos;
+
+        sprite.fillRect(0, vpos, width, vspace, BGColor);
+
+        for( i=0; i<width; i+=stepX ) {
+          centerdiff = abs(center - i);
+          if(i==center) {
+            x2 = i;
+          } else {
+            if( i < center ) {
+              x2 = i - centerdiff*2;
+            } else { // i > center
+              x2 = i + centerdiff*2;
+            }
+          }
+          sprite.drawFastVLine(XPos+i-x, 0, vpos, GridColor);
+          sprite.drawLine(XPos+i-x, vpos, XPos+x2-x, YPos+vpos+vspace, GridColor);
+        }
+        
+        for( i=0; i<height-vspace+YPos; i+=stepY ) {
+          sprite.drawFastHLine(0, i-y, YPos+spanX, GridColor);
+        }
+        float powa = 32;
+        while(powa>1) {
+          powa /=2;
+          sprite.drawFastHLine(0, vpos+(vspace/powa), YPos+spanX, GridColor);  
+        }
       }
     }
 
@@ -320,7 +407,6 @@ class AmigaRulez {
       transform(scale, x, y);
       fillTiles(phase >= phase8Rad);
     }
-
 
 
     void animate( long duration = 5000, bool clearAfter = true ) {
@@ -365,15 +451,17 @@ class AmigaRulez {
         
         ball.fillSprite(BGColor); // Note: Sprite is filled with black when created
         if( Wires > 0 ) {
-          shadow.fillSprite( BGColor );
+          if( hasPsram ) {
+            shadow.fillSprite( TFT_TRANSPARENT );
+          } else {
+            shadow.fillSprite( BGColor );            
+          }
           int r1 = (shadow.width()/2-4)* (1-.5*absCosAngleY);
           int r2 = (shadow.height()/2-2)* (1-.5*absCosAngleY);
-          //int shadowcolor = tft.color565( 0xA0, 0xA0, 0xA0 );
-          
+          drawGrid( shadow, positionX-spriteCenterX + shadow.width()/2, ShadowYPos, Width, Height, Width,       Height );
           shadow.fillEllipse( shadow.width()/2, shadow.height()/2, r1, r2, ShadowColor );
-          drawGrid( shadow, positionX-spriteCenterX + shadow.width()/2, ShadowYPos+shadow.height(), Width, Height, Width, Height );
-          drawGrid( ball, positionX-spriteCenterX, positionY-spriteCenterY, Width, Height, spriteWidth, spriteHeight );
-          shadow.pushSprite( positionX-spriteCenterX + shadow.width()/2, ShadowYPos+shadow.height() );
+          drawGrid( ball,   positionX-spriteCenterX,                    positionY-spriteCenterY,    Width, Height, spriteWidth, spriteHeight );
+          shadow.pushSprite( positionX-spriteCenterX + shadow.width()/2, ShadowYPos );
         }
         drawBall( Phase, variableScale, oldScale, spriteCenterX, spriteCenterY );
         ball.pushSprite( positionX-spriteCenterX, positionY-spriteCenterY, TFT_TRANSPARENT );
