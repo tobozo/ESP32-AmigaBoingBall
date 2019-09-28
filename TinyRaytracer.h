@@ -12,12 +12,18 @@
 
 uint16_t *imgBuffer = NULL; // output pixels
 uint16_t  *bgBuffer = NULL; // 360 deg background pixels
+uint8_t  *rgbBuffer = NULL;
 
 // 0,2967 rad = 17 deg (ball tilt)
 float st = sin( 0.2967 );
 float ct = cos( 0.2967 );
 
+extern bool renderfloor;
+extern bool renderbg;
 extern bool hasPsram;
+
+bool rayhitsphere = false;
+bool rayhitfloor = false;
 
 float minx=INFINITY, miny=INFINITY;
 float maxx=-INFINITY, maxy=-INFINITY;
@@ -30,14 +36,16 @@ int envmap_width, envmap_height;
 
 void tinyRayTracerInit() {
   // TODO : move this to tinytracer.h
-  if( psramInit() ) {
+  if( hasPsram ) {
     Serial.println("OK PSRAM");
     imgBuffer = (uint16_t*)ps_calloc( 320*240, sizeof( uint16_t ) );
     bgBuffer =  (uint16_t*)ps_calloc( 320*240, sizeof( uint16_t ) );
+    rgbBuffer = (uint8_t*)ps_calloc( 320*240*3, sizeof( uint8_t ) );
   } else {
     Serial.println("NO PSRAM");
     imgBuffer = (uint16_t*)calloc( 128*128, sizeof( uint16_t ) );
     bgBuffer = (uint16_t*)calloc( 128*128, sizeof( uint16_t ) );
+    rgbBuffer = (uint8_t*)calloc( 128*128*3, sizeof( uint8_t ) );
   }
 }
 
@@ -94,6 +102,7 @@ Vec3f refract(const Vec3f &I, const Vec3f &N, const float eta_t, const float eta
 
 bool scene_intersect(const Vec3f &orig, const Vec3f &dir, const std::vector<Sphere> &spheres, Vec3f &hit, Vec3f &N, Material &material) {
     float spheres_dist = std::numeric_limits<float>::max();
+    //rayhitsphere = false;
     for (size_t i=0; i < spheres.size(); i++) {
         float dist_i;
         if (spheres[i].ray_intersect(orig, dir, dist_i) && dist_i < spheres_dist) {
@@ -123,11 +132,12 @@ bool scene_intersect(const Vec3f &orig, const Vec3f &dir, const std::vector<Sphe
             }
             material.diffuse_color = togglecolor ? Vec3f(1,0,0) : Vec3f(1, 1, 1);
             material.diffuse_color = material.diffuse_color*.5; // luminosity
+            rayhitsphere = true;
         }
     }
 
     float checkerboard_dist = std::numeric_limits<float>::max();
-    if (fabs(dir.y)>1e-3)  {
+    if (renderfloor && fabs(dir.y)>1e-3)  {
         float d = -(orig.y+4)/dir.y; // the checkerboard plane has equation y = -4
         Vec3f pt = orig + dir*d;
         if (d>0 && fabs(pt.x)<10 && pt.z<-10 && pt.z>-30 && d<spheres_dist) {
@@ -136,6 +146,8 @@ bool scene_intersect(const Vec3f &orig, const Vec3f &dir, const std::vector<Sphe
             N = Vec3f(0,1,0);
             material.diffuse_color = (int(.5*hit.x+1000) + int(.5*hit.z)) & 1 ? Vec3f(1,0.,0) : Vec3f(1, 1, 1);
             material.diffuse_color = material.diffuse_color*.3; // luminosity
+            rayhitfloor = true;
+            rayhitsphere = false;
         }
     }
     return std::min(spheres_dist, checkerboard_dist)<1000;
@@ -147,9 +159,8 @@ bool scene_intersect(const Vec3f &orig, const Vec3f &dir, const std::vector<Sphe
 Vec3f cast_ray(const Vec3f &orig, const Vec3f &dir, const std::vector<Sphere> &spheres, const std::vector<Light> &lights, size_t depth=0) {
     Vec3f point, N;
     Material material;
-
     if (depth>4 || !scene_intersect(orig, dir, spheres, point, N, material)) {
-        if( bgBuffer!=NULL ) {
+        if( renderbg && bgBuffer!=NULL ) {
           int x = std::max(0, std::min(envmap_width -1, static_cast<int>((atan2(dir.z, dir.x)/(2*M_PI) + .5)*envmap_width)));
           int y = std::max(0, std::min(envmap_height-1, static_cast<int>(acos(dir.y)/M_PI*envmap_height)));
           uint32_t bgIndex = x+y*envmap_width;
@@ -178,9 +189,9 @@ Vec3f cast_ray(const Vec3f &orig, const Vec3f &dir, const std::vector<Sphere> &s
         Vec3f shadow_orig = light_dir*N < 0 ? point - N*1e-3 : point + N*1e-3; // checking if the point lies in the shadow of the lights[i]
         Vec3f shadow_pt, shadow_N;
         Material tmpmaterial;
-        if (scene_intersect(shadow_orig, light_dir, spheres, shadow_pt, shadow_N, tmpmaterial) && (shadow_pt-shadow_orig).norm() < light_distance)
-            continue;
-
+        if (scene_intersect(shadow_orig, light_dir, spheres, shadow_pt, shadow_N, tmpmaterial) && (shadow_pt-shadow_orig).norm() < light_distance) {
+          continue;
+        }
         diffuse_light_intensity  += lights[i].intensity * std::max(0.f, light_dir*N);
         specular_light_intensity += powf(std::max(0.f, -reflect(-light_dir, N)*dir), material.specular_exponent)*lights[i].intensity;
     }

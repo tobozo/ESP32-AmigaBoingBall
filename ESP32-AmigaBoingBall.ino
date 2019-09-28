@@ -30,8 +30,8 @@
 
 */
 
-#define M5STACK
-//#define ODROIDGO
+//#define M5STACK
+#define ODROIDGO
 //#define DDUINO32XS
 //#define LOLIND32PRO
 //#define WROVER_KIT
@@ -39,7 +39,10 @@
 //#define USE_NEOPIXEL
 //#define USE_ESPI
 
+
 #include "assets.h"
+#include <SD.h>
+#include "TinyJpegEncoder.h"
 #include "TinyRaytracer.h"
 
 #if defined(WROVER_KIT)
@@ -296,6 +299,7 @@ static void animTask(void * param=NULL) {
 void setup() {
   Serial.begin(115200);
   tft.begin();
+  SD.begin();
   #ifdef ROTATION
     tft.setRotation( ROTATION );
   #endif
@@ -313,11 +317,17 @@ void setup() {
   } else {
     Serial.println("No PRSRAM");
   }
-  
+
+  if( !SD.exists("/jpg") ) {
+    Serial.println("jpg folder does not exist, creating");
+    SD.mkdir("/jpg");
+  } else {
+    Serial.println("jpg folder already exists");
+  }
 
   AmigaBall.init( amigaBallConfig );
 
-  xTaskCreatePinnedToCore(animTask, "animTask", 25000, NULL, 5, NULL, 1); /* last = Task Core */
+  xTaskCreatePinnedToCore(animTask, "animTask", 27000, NULL, 5, NULL, 1); /* last = Task Core */
 
   #ifdef USE_NEOPIXEL
     // turn that damn neopixel off!!

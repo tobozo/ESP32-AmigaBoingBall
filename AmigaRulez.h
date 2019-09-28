@@ -37,53 +37,216 @@ struct color {
   float b;
 };
 
-Vec3f ivorySphereCoords( -2, 0, -24 );
-Vec3f glassSphereCoorsd ( 0, -1.5, -14 );
-color ivoryColor =  {0.4, 0.4, 0.3 };
+
+// checkboard.y = -1e-3
+Vec3f BallCoords( 3.2, -2, -18 );
+color BallDefaultColor =  {0.4, 0.4, 0.3 };
+float BallRadius = 2.;
+
+Light Projector1(Vec3f(-10, 20,  20), 1.5);
+Light Projector2(Vec3f( 5, 50, -25), 1.8);
+Light Projector3(Vec3f( 5, 20,  30), 0.7);
 
 
-void render(uint16_t posx, uint16_t posy, uint16_t width, uint16_t height, const std::vector<Sphere> &spheres, const std::vector<Light> &lights, float fov=M_PI/2) {
+Vec2f BallCoords2DMin( tft.width(), tft.height());
+Vec2f BallCoords2DMax( -tft.width(), -tft.height() );
+
+Vec2f FloorCoords2DMin( tft.width(), tft.height());
+Vec2f FloorCoords2DMax( -tft.width(), -tft.height() );
+
+void setBounds(Vec2f &Coords2DMin, Vec2f &Coords2DMax, int i, int j) {
+  if ( Coords2DMin.x > i ) Coords2DMin.x = i;
+  if ( Coords2DMin.y > j ) Coords2DMin.y = j;
+  if ( Coords2DMax.x < i ) Coords2DMax.x = i;
+  if ( Coords2DMax.y < j ) Coords2DMax.y = j;
+}
+
+
+float cot(float x) {
+  return cos(x)/sin(x);
+}
+
+float getSphereRadius( Vec3f &coords, float radius, float fov) {
+  //approximate radius on screen[CLIP SPACE] = world radius * cot(fov / 2) / Z
+  return radius * cot( fov / 1 ) / coords.z;
+}
+
+float project2D(float fov, float d, float r) {
+  return 1.0 / tan(fov) * r / sqrt(d * d - r * r);
+}
+
+
+bool debugray = false;
+
+uint16_t getrenderedpixel(uint16_t i, uint16_t j, uint16_t width, uint16_t height, const std::vector<Sphere> &spheres, const std::vector<Light> &lights, float fov) {
+  float dir_x =  (i + 0.5) -  width/2.;
+  float dir_y = -(j + 0.5) + height/2.;    // this flips the image at the same time
+  float dir_z = -height/(2.*tan(fov/2.));
+  rayhitsphere = false;
+  rayhitfloor = false;
+  Vec3f rgb = cast_ray(Vec3f(0,0,0), Vec3f(dir_x, dir_y, dir_z).normalize(), spheres, lights);
+  char r = (char)(255 * max(0.f, min(1.f, rgb[0])));
+  char g = (char)(255 * max(0.f, min(1.f, rgb[1])));
+  char b = (char)(255 * max(0.f, min(1.f, rgb[2])));
+
+  uint32_t bufferindex = i+j*width;
+  
+  rgbBuffer[bufferindex+0] = r;
+  rgbBuffer[bufferindex+1] = g;
+  rgbBuffer[bufferindex+2] = b;
+  
+  //uint16_t pixelcolor = tft.color565(r, g, b);
+  return tft.color565(r, g, b);
+/*
+  if( rayhitfloor && rayhitsphere ) {
+    rayhitsphere = false;
+    rayhitfloor = false;
+    if(debugray) return TFT_GREEN;
+  }
+  
+  if( rayhitfloor ) {
+    rayhitsphere = false;
+    if(debugray) return TFT_YELLOW;
+  }
+  if( rayhitsphere ) {
+    rayhitfloor = false;
+    if(debugray) return TFT_ORANGE;
+  }
+  return tft.color565(r, g, b);*/
+}
+
+
+
+void renderHLine(int32_t x, int32_t y, int32_t l, uint16_t width, uint16_t height, const std::vector<Sphere> &spheres, const std::vector<Light> &lights, float fov) {
+  for(uint32_t i=x; i<x+l ;i++) {
+      uint16_t pixelcolor = getrenderedpixel(i, y, width, height, spheres, lights, fov);
+      imgBuffer[i+y*width] = pixelcolor;
+      tft.drawPixel(i, y, pixelcolor);
+  }
+}
+
+void renderCircle(int32_t x0, int32_t y0, int32_t r, uint16_t width, uint16_t height, const std::vector<Sphere> &spheres, const std::vector<Light> &lights, float fov) {
+  int32_t  x  = 0;
+  int32_t  dx = 1;
+  int32_t  dy = r+r;
+  int32_t  p  = -(r>>1);
+
+  renderHLine(x0 - r, y0, dy+1, width, height, spheres, lights, fov);
+  while(x<r){
+
+    if(p>=0) {
+      dy-=2;
+      p-=dy;
+      r--;
+    }
+    dx+=2;
+    p+=dx;
+    x++;
+    renderHLine(x0 - r, y0 + x, 2 * r+1, width, height, spheres, lights, fov);
+    renderHLine(x0 - r, y0 - x, 2 * r+1, width, height, spheres, lights, fov);
+    renderHLine(x0 - x, y0 + r, 2 * x+1, width, height, spheres, lights, fov);
+    renderHLine(x0 - x, y0 - r, 2 * x+1, width, height, spheres, lights, fov);
+  }
+}
+
+
+void render(uint16_t posx, uint16_t posy, uint16_t width, uint16_t height, int16_t offsetx, int16_t offsety, uint16_t offsetw, uint16_t offseth, const std::vector<Sphere> &spheres, const std::vector<Light> &lights, float fov=M_PI/2) {
   // yay ! thanks to @atanisoft https://gitter.im/espressif/arduino-esp32?at=5c474edc8ce4bb25b8f1ed95
   uint32_t pos = 0;
   uint32_t pos16 = 0;
+  uint16_t jstart = 0, jend = height;
+  uint16_t istart = 0, iend = width;
 
-  for (size_t j = 0; j<height; j++) { // actual rendering loop
-    for (size_t i = 0; i<width; i++) {
-      float dir_x =  (i + 0.5) -  width/2.;
-      float dir_y = -(j + 0.5) + height/2.;    // this flips the image at the same time
-      float dir_z = -height/(2.*tan(fov/2.));
-      Vec3f pixelbuffer /*framebuffer[i+j*width]*/ = cast_ray(Vec3f(0,0,0), Vec3f(dir_x, dir_y, dir_z).normalize(), spheres, lights);
-      char r = (char)(255 * max(0.f, min(1.f, pixelbuffer[0])));
-      char g = (char)(255 * max(0.f, min(1.f, pixelbuffer[1])));
-      char b = (char)(255 * max(0.f, min(1.f, pixelbuffer[2])));
-      uint16_t pixelcolor = tft.color565(r, g, b);
-      imgBuffer[++pos16] = pixelcolor;
+  if( offseth > 0 ) {
+    jstart = offsety;
+    jend = offsety + offseth;
+  }
+  if( offsetw > 0 ) {
+    istart = offsetx;
+    iend = offsetx + offsetw;
+  }
+
+  for (size_t j = jstart; j<jend; j++) { // actual rendering loop
+    for (size_t i = istart; i<iend; i++) {
+      uint16_t pixelcolor = getrenderedpixel(i, j, width, height, spheres, lights, fov);
+      if(debugray) {
+        if( rayhitsphere ) {
+          setBounds(BallCoords2DMin, BallCoords2DMax, i, j);
+        }
+        if( rayhitfloor ) {
+          setBounds(FloorCoords2DMin, FloorCoords2DMax, i, j);
+        }
+      }
+      //imgBuffer[++pos16] = pixelcolor;
+      uint32_t bufferindex = i+j*width;
+      imgBuffer[bufferindex] = pixelcolor;
       tft.drawPixel(i+posx, j+posy, pixelcolor);
     }
   }
 }
 
 
-void raytrace(uint16_t x, uint16_t y, uint16_t width, uint16_t height, float fov) {
-  Material      ivory(1.0, Vec4f(0.8,  0.2, 0.0, 0.0), Vec3f(ivoryColor.r, ivoryColor.g, ivoryColor.b),   50.);
-  //Material      glass(1.5, Vec4f(0.0,  0.5, 0.1, 0.8), Vec3f(0.6, 0.7, 0.8),  125.);
-  //Material red_rubber(1.0, Vec4f(0.9,  0.1, 0.0, 0.0), Vec3f(0.3, 0.1, 0.1),   10.);
-  //Material     mirror(1.0, Vec4f(0.0, 10.0, 0.8, 0.0), Vec3f(1.0, 1.0, 1.0), 1425.);
-  float sphereRadius = 2;
-  std::vector<Sphere> spheres;
-  spheres.push_back(Sphere(Vec3f(ivorySphereCoords.x,                ivorySphereCoords.y,                ivorySphereCoords.z), sphereRadius, ivory));
-  spheres.push_back(Sphere(Vec3f(ivorySphereCoords.x+sphereRadius*2, ivorySphereCoords.y,                ivorySphereCoords.z), sphereRadius, ivory));
-  spheres.push_back(Sphere(Vec3f(ivorySphereCoords.x,                ivorySphereCoords.y+sphereRadius*2, ivorySphereCoords.z), sphereRadius, ivory));
-  spheres.push_back(Sphere(Vec3f(ivorySphereCoords.x+sphereRadius*2, ivorySphereCoords.y+sphereRadius*2, ivorySphereCoords.z), sphereRadius, ivory));
-  std::vector<Light>  lights;
-  lights.push_back(Light(Vec3f(-10, 20,  20), 1.5));
-  lights.push_back(Light(Vec3f( 5, 50, -25), 1.8));
-  lights.push_back(Light(Vec3f( 5, 20,  30), 0.7));
-  render(x, y, width, height, spheres, lights, fov);
+void readBufferRect( uint16_t *sourceBuffer, TFT_eSprite &destSprite, uint16_t x, uint16_t y, uint16_t width, uint16_t height ) {
+  Serial.printf("ReadRectBuffer( x=%d, y=%d, width=%d, height=%d\n", x, y, width, height);
+  //uint16_t *destBuffer = ( uint16_t* )ps_calloc( width*height, sizeof( uint16_t ) );
+  uint32_t imgindex = 0;
+  destSprite.createSprite( width, height );
+  uint16_t *destBuffer = (uint16_t*)sprite.frameBuffer(1);
+  for( uint16_t j=y; j<y+height; j++ ) {
+    for( uint16_t i=x; i<x+width; i++ ) {
+      Serial.printf("%04x ", i, j, sourceBuffer[i+j*width]);
+      destBuffer[imgindex] = sourceBuffer[i+j*width];
+      imgindex++;
+    }
+    Serial.println();
+  }
+  //destSprite.createSprite( width, height );
+  destSprite.pushImage(0, 0, width, height, destBuffer);
+  //free(destBuffer);
 }
 
 
 
+bool renderball = true;
+bool renderfloor = true;
+bool renderbg = true;
+
+void raytracecircle(uint16_t x, uint16_t y, uint16_t width, uint16_t height, float fxpos, float fypos, float fradius, float fov) {
+  // reset rgbBuffer
+  memset( rgbBuffer, 0, 320*240*3 );
+  Material      BallMaterial(1.0, Vec4f(0.8,  0.2, 0.0, 0.0), Vec3f(BallDefaultColor.r, BallDefaultColor.g, BallDefaultColor.b),   50.);
+  std::vector<Sphere> spheres;
+  spheres.push_back(Sphere(Vec3f(BallCoords.x,                BallCoords.y,                BallCoords.z), BallRadius, BallMaterial));
+  std::vector<Light>  lights;
+  lights.push_back( Projector1 );
+  lights.push_back( Projector2 );
+  lights.push_back( Projector3 );
+  renderCircle(fxpos, fypos, fradius, width, height, spheres, lights, fov);
+}
+
+void raytracebox(uint16_t x, uint16_t y, uint16_t width, uint16_t height, int16_t offsetx=0, int16_t offsety=0, uint16_t offsetw=0, uint16_t offseth=0, float fov=0.5) {
+  // reset rgbBuffer
+  memset( rgbBuffer, 0, 320*240*3 );
+  Material      BallMaterial(1.0, Vec4f(0.8,  0.2, 0.0, 0.0), Vec3f(BallDefaultColor.r, BallDefaultColor.g, BallDefaultColor.b),   50.);
+  //Material      glass(1.5, Vec4f(0.0,  0.5, 0.1, 0.8), Vec3f(0.6, 0.7, 0.8),  125.);
+  //Material red_rubber(1.0, Vec4f(0.9,  0.1, 0.0, 0.0), Vec3f(0.3, 0.1, 0.1),   10.);
+  //Material     mirror(1.0, Vec4f(0.0, 10.0, 0.8, 0.0), Vec3f(1.0, 1.0, 1.0), 1425.);
+  std::vector<Sphere> spheres;
+  if( renderball ) {
+    spheres.push_back(Sphere(Vec3f(BallCoords.x,                BallCoords.y,                BallCoords.z), BallRadius, BallMaterial));
+  }
+  //spheres.push_back(Sphere(Vec3f(BallCoords.x+BallRadius*2, BallCoords.y,                BallCoords.z), BallRadius, BallMaterial));
+  //spheres.push_back(Sphere(Vec3f(BallCoords.x,                BallCoords.y+BallRadius*2, BallCoords.z), BallRadius, BallMaterial));
+  //spheres.push_back(Sphere(Vec3f(BallCoords.x+BallRadius*2, BallCoords.y+BallRadius*2, BallCoords.z), BallRadius, BallMaterial));
+  std::vector<Light>  lights;
+  lights.push_back( Projector1 );
+  lights.push_back( Projector2 );
+  lights.push_back( Projector3 );
+  render(x, y, width, height, offsetx, offsety, offsetw, offseth, spheres, lights, fov);
+}
+
+
+extern bool hasPsram;
 
 struct AmigaBallConfig {
   long Framelength = 20;
@@ -110,10 +273,10 @@ class AmigaRulez {
     Points points[10][10];
 
     float deg2rad   = PI/180.0;
-    float phase8Rad = PI/8.0; // 22.5 deg
-    float phase4Rad = PI/4.0; // 45 deg
-    float phase2Rad = PI/2.0; // 90 deg
-    float twopi     = PI*2;
+    float EIGTH_PI = PI/8.0; // 22.5 deg
+    float QUARTER_PI = PI/4.0; // 45 deg
+    //float HALF_PI = PI/2.0; // 90 deg
+    //float TWO_PI     = PI*2;
     float Phase     = 0.0;
     float velocityX = 2.1;
     float velocityY = 0.07;
@@ -184,13 +347,15 @@ class AmigaRulez {
       Height = config.Height;
       Wires  = config.Wires;
       hasPsram = psramInit();
-
       setupValues();
       
       tft.fillRect(XPos, YPos, Width, Height, BGColor);
 
       if( Wires > 0 ) {
 
+
+        Serial.println("Amigaball init");
+      
         shadow.createSprite( spriteWidth / 2, spriteHeight / 8 );
         shadow.fillSprite( BGColor );
         shadow.fillEllipse( shadow.width()/2, shadow.height()/2, shadow.width()/2-4, shadow.height()/2-2, ShadowColor );
@@ -203,20 +368,109 @@ class AmigaRulez {
           grid.createSprite( Width, Height );
           bgImage.createSprite( Width, Height );
 
+          Serial.println("Created Sprite");
+
           envmap_width = 1280;
           envmap_height = 640;
 
           tinyRayTracerInit();
 
+          Serial.println("Raytracer init'd");
+          // calculate ball and horizon coords
+          float fradius  = project2D(0.5, fabs(BallCoords.z)-1.0, BallRadius);
+          float fcenterx = project2D(0.5, fabs(BallCoords.z)-1.0, BallCoords.x);
+          float fcentery = project2D(0.5, fabs(BallCoords.z)-1.0, BallCoords.y);
+          float checkerhorizon = project2D(0.5, fabs(30.0)-1.0, -4.0); // checkerboard y = -4, 10 < z < 30
+          float fxpos = (fcenterx*Height)+Width/2;
+          float fypos = (-fcentery*Height)+Height/2;
+          // translate to screen
+          checkerhorizon = (-checkerhorizon*Height)+Height/2;;
+          fradius *= Height;
+          // sphere bounds
+          float foffx, foffy, fheight, fwidth;
+          foffx = fxpos-fradius;
+          foffy = fypos-fradius;
+          fwidth = 1.0+fradius*2.;
+
+          if( fypos + fradius > checkerhorizon ) {
+            fheight = checkerhorizon - foffy;
+            /* box h boundings = [ fypos-radius - checkerhorizon ] */
+          } else {
+            fheight = fwidth;
+            /* box h boundings = [ fypos-radius - fypos+radius  ] */
+          }
+          
+          Serial.printf("Sphere centerx (%F): %F, translated: %F\n", BallCoords.x, fcenterx, fxpos );
+          Serial.printf("Sphere centery (%F): %F, translated: %F\n", BallCoords.y, fcentery, fypos );
+          Serial.printf("Sphere radius: %F, * %F = %F \n", fradius, Height, fradius);
+          Serial.printf("Checkboard horizon y : %F\n", checkerhorizon);
+
+/*
+          tft.drawCircle(fxpos, fypos, fradius, GREEN);
+          tft.drawRect( fxpos-fradius, fypos-fradius, fradius*2.0, fradius*2.0, TFT_PURPLE );
+          tft.drawRect( fxpos-fradius, fypos-fradius, fradius*2.0, checkerhorizon-(fypos-fradius), TFT_ORANGE );
+          tft.drawRect( 0, checkerhorizon, Width, Height-checkerhorizon, TFT_BLUE  );*/
+
           sprite.createSprite( envmap_width, envmap_height );
           sprite_drawJpg(0, 0, envmap_1280x640_q4_jpeg, envmap_1280x640_q4_jpeg_len, envmap_width, envmap_height);
+
+          Serial.println("Created BG Sprite");
+
           bgBuffer = (uint16_t*)sprite.frameBuffer(1);
 
-          raytrace(XPos, YPos, Width, Height, 0.5);
+          renderball = false;
+          renderfloor = false;
+          renderbg = true;
+          raytracebox(XPos, YPos, Width, checkerhorizon);
 
-          Serial.printf("%f %f %f %f\n", minx, miny, maxx, maxy);
+          TFT_eSprite Sprite_Background = TFT_eSprite(&tft);
+          Sprite_Background.createSprite( Width, checkerhorizon );
+          Sprite_Background.pushImage(0, 0, Width, checkerhorizon, imgBuffer);
+
+          
+          renderball = true;
+          renderfloor = true;
+
+          raytracecircle(XPos, YPos, Width, Height, fxpos, fypos, fradius, 0.5);
+          TFT_eSprite Sprite_Ball = TFT_eSprite ( &tft );
+          readBufferRect( imgBuffer, Sprite_Ball, fxpos-fradius, fypos-fradius, 1.0+fradius*2.0, 1.0+checkerhorizon-(fypos-fradius) );
+          
+          raytracebox(XPos, YPos, Width, Height, 0, checkerhorizon, Width, Height-checkerhorizon);
+
+          TFT_eSprite Sprite_Floor = TFT_eSprite ( &tft );
+          readBufferRect( imgBuffer, Sprite_Floor, 0, checkerhorizon, Width, Height-checkerhorizon );
           
           bgImage.pushImage(0, 0, Width, Height, imgBuffer);
+
+          bgImage.drawCircle( fxpos, fypos, fradius, GREEN );
+          bgImage.drawRect( fxpos-fradius, fypos-fradius, 1.0+fradius*2.0, 1.0+fradius*2.0, TFT_PURPLE );
+          bgImage.drawRect( fxpos-fradius, fypos-fradius, 1.0+fradius*2.0, 1.0+checkerhorizon-(fypos-fradius), TFT_ORANGE );
+          bgImage.drawRect( 0, checkerhorizon, Width, Height-checkerhorizon, TFT_BLUE  );
+
+/*
+          struct ballSpriteArray {
+            TFT_eSprite sprite =  TFT_eSprite(&tft);
+          };
+
+          ballSpriteArray BallSpriteArray[60];
+          
+          float hwratio = Height / Width;
+
+          float minY = -4 + BallRadius; // -4 = floor y
+          float minX = minY / hwratio;
+          float maxX = -minX;
+          float maxY = -minY;
+          float spanY = maxY - minY;
+          float spanX = maxX - minX;
+          
+          Vec2f BounceSpanBoundsMin( minX, minY );
+          Vec2f BounceSpanBoundsMax( maxX, maxY );
+
+          for(uint8_t i=0;i<60;i++) {
+            BallSpriteArray[i];
+          }
+          */
+
 
           drawGrid(bgImage, XPos, YPos, Width, Height, Width, Height);
           grid.pushImage(0, 0, bgImage.width(), bgImage.height(), (uint16_t*)bgImage.frameBuffer(1) );
@@ -286,11 +540,11 @@ class AmigaRulez {
 
     float getLat(float phase, int i) {
       if(i == 0) {
-        return -phase2Rad;
+        return -HALF_PI;
       } else if(i == 9) {
-        return phase2Rad;
+        return HALF_PI;
       } else {
-        return -phase2Rad + phase + (i-1) * phase8Rad;
+        return -HALF_PI + phase + (i-1) * EIGTH_PI;
       }
     }
 
@@ -301,7 +555,7 @@ class AmigaRulez {
         sin_lat[i] = sin( lat );
       }
       for(int j=0;j<9;j++) {
-        float lon = -phase2Rad + j * phase8Rad;
+        float lon = -HALF_PI + j * EIGTH_PI;
         float _y = sin( lon );
         float _l = cos( lon );
         for(int i=0;i<10;i++) {
@@ -403,9 +657,9 @@ class AmigaRulez {
 
 
     void drawBall(float phase, float scale, float oldscale, float x, float y) {
-      calcPoints( fmod(phase, phase8Rad) );
+      calcPoints( fmod(phase, EIGTH_PI) );
       transform(scale, x, y);
-      fillTiles(phase >= phase8Rad);
+      fillTiles(phase >= EIGTH_PI);
     }
 
 
@@ -419,10 +673,10 @@ class AmigaRulez {
       while( !AnimationDone ) {
         lastTick = millis();
         if( isMovingRight ) {
-          Phase = fmod( Phase + ( phase4Rad - PhaseVelocity ), phase4Rad );
+          Phase = fmod( Phase + ( QUARTER_PI - PhaseVelocity ), QUARTER_PI );
           positionX += velocityX;
         } else {
-          Phase = fmod( Phase + PhaseVelocity, phase4Rad );
+          Phase = fmod( Phase + PhaseVelocity, QUARTER_PI );
           positionX -= velocityX;
         }
         if ( positionX >= RightBoundary ) {
@@ -432,7 +686,7 @@ class AmigaRulez {
           isMovingRight = true;
           buzz_wall = true;
         }
-        angleY = fmod( angleY + velocityY, twopi );
+        angleY = fmod( angleY + velocityY, TWO_PI );
         float absCosAngleY = fabs( cos( angleY ) );
         variableScale = Scale + ScaleAmplitude * absCosAngleY;
         positionY = VCentering - YPosAmplitude * absCosAngleY;
