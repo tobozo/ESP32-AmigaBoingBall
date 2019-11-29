@@ -264,7 +264,7 @@ class AmigaRulez {
       }
     }
 
-    void drawGrid(TFT_eSprite sprite, int x, int y, int width, int height, int spanX, int spanY) {
+    void drawGrid(TFT_eSprite &sprite, int x, int y, int width, int height, int spanX, int spanY) {
 
       int center = width / 2;
       int vspace = ( height*2 ) / Wires;
